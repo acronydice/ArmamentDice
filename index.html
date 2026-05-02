@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Forge of Fates — Dice Roller</title>
+<title>ArmamentDice</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Cinzel+Decorative:wght@400;700&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap');
 
@@ -38,7 +38,7 @@
     -webkit-user-select: none;
   }
 
-  /* TOP BAR Menu */
+  /* TOP BAR */
   #topbar {
     display: flex;
     align-items: center;
@@ -82,7 +82,13 @@
     overflow: hidden;
     cursor: pointer;
   }
-  #diceCanvas { display: block; width: 100%; height: 100%; }
+  /* bg canvas sits at z=0, dice canvas at z=2, result overlay at z=3 */
+  #diceCanvas {
+    display: block; width: 100%; height: 100%;
+    position: absolute; inset: 0;
+    z-index: 2;
+    background: transparent;
+  }
 
   /* RESULT OVERLAY */
   #result-overlay {
@@ -96,6 +102,7 @@
     opacity: 0;
     transition: opacity 0.5s;
     gap: 8px;
+    z-index: 3;
   }
   #result-overlay.show { opacity: 1; }
   #result-total {
@@ -262,6 +269,7 @@
     pointer-events: none;
     letter-spacing: 0.08em;
     white-space: nowrap;
+    z-index: 4;
   }
 
   /* PANEL OVERLAY */
@@ -482,7 +490,7 @@
     Menu
   </button>
   <button class="tb-btn adv-btn" id="adv-btn" onclick="toggleAdv()">ADV</button>
-  <div id="topbar-title">Forge of Fates</div>
+  <div id="topbar-title">ArmamentDice</div>
   <button class="tb-btn dis-btn" id="dis-btn" onclick="toggleDis()">DIS</button>
   <button class="tb-btn" id="shake-btn" onclick="requestMotionPermission()" title="Enable shake to roll">
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 2 Q1 7 3 12M11 2 Q13 7 11 12M5 1 L9 1M5 13 L9 13"/></svg>
@@ -541,6 +549,11 @@
     <div class="setting-section">
       <div class="setting-label">Roll Sound</div>
       <div class="option-grid" id="sound-options"></div>
+    </div>
+
+    <div class="setting-section">
+      <div class="setting-label">Roll Speed</div>
+      <div class="option-grid" id="speed-options"></div>
     </div>
 
     <div class="setting-section">
@@ -641,76 +654,57 @@ const SOUNDS = [
 let currentSkin = 'lava';
 let currentBg = 'dark';
 let currentSound = 'default';
+let rollSpeed = 1.0; // 0.5=slow, 1.0=normal, 2.0=fast
 let bgAnimFrame = null;
 let bgCanvas = null;
 let bgCtx = null;
 let bgParticles = [];
 
 // ─── AUDIO ───────────────────────────────────────────────────────────────────
-let audioCtx = null;
+// Loads sound files from ./sounds/<id>.mp3 (falls back to .ogg then .wav)
+// Required files: default.mp3, thunder.mp3, sword.mp3, explosion.mp3,
+//                 fireball.mp3, magic.mp3, ice.mp3
+const SOUND_EXTENSIONS = ['mp3', 'ogg', 'wav'];
+const soundCache = {};
 
 function getAudio() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  return audioCtx;
+  if (!window._audioCtx) {
+    try { window._audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+  }
+  return window._audioCtx;
 }
 
 function playSound(type) {
   try {
     const ctx = getAudio();
-    const now = ctx.currentTime;
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(0.35, now);
-    master.connect(ctx.destination);
-
-    if (type === 'default') {
-      for (let i = 0; i < 6; i++) {
-        const buf = ctx.createBuffer(1, ctx.sampleRate * 0.1, ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let j = 0; j < data.length; j++) data[j] = (Math.random()*2-1) * (1 - j/data.length);
-        const src = ctx.createBufferSource(); src.buffer = buf;
-        const flt = ctx.createBiquadFilter(); flt.type = 'bandpass'; flt.frequency.value = 1200 + Math.random()*800;
-        src.connect(flt); flt.connect(master);
-        src.start(now + i * 0.08 + Math.random()*0.04);
-      }
-    } else if (type === 'thunder') {
-      const buf = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let j = 0; j < data.length; j++) data[j] = (Math.random()*2-1) * Math.pow(1 - j/data.length, 0.5);
-      const src = ctx.createBufferSource(); src.buffer = buf;
-      const flt = ctx.createBiquadFilter(); flt.type = 'lowpass'; flt.frequency.value = 200;
-      src.connect(flt); flt.connect(master); src.start(now);
-    } else if (type === 'sword') {
-      const osc = ctx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.setValueAtTime(800, now);
-      osc.frequency.exponentialRampToValueAtTime(200, now + 0.3);
-      const env = ctx.createGain(); env.gain.setValueAtTime(0.5, now); env.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-      osc.connect(env); env.connect(master); osc.start(now); osc.stop(now + 0.35);
-    } else if (type === 'explosion') {
-      const buf = ctx.createBuffer(1, ctx.sampleRate * 0.8, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let j = 0; j < data.length; j++) data[j] = (Math.random()*2-1) * Math.exp(-j/(ctx.sampleRate*0.3));
-      const src = ctx.createBufferSource(); src.buffer = buf;
-      const flt = ctx.createBiquadFilter(); flt.type = 'lowpass'; flt.frequency.value = 300;
-      src.connect(flt); flt.connect(master); src.start(now);
-    } else if (type === 'fireball') {
-      const osc = ctx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.setValueAtTime(120, now);
-      osc.frequency.exponentialRampToValueAtTime(60, now + 0.5);
-      const env = ctx.createGain(); env.gain.setValueAtTime(0.7, now); env.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
-      const flt = ctx.createBiquadFilter(); flt.type = 'bandpass'; flt.frequency.value = 800; flt.Q.value = 0.5;
-      osc.connect(flt); flt.connect(env); env.connect(master); osc.start(now); osc.stop(now + 0.6);
-    } else if (type === 'magic') {
-      for (let i = 0; i < 4; i++) {
-        const osc = ctx.createOscillator(); osc.type = 'sine'; osc.frequency.value = 440 * Math.pow(1.5, i);
-        const env = ctx.createGain(); env.gain.setValueAtTime(0, now + i*0.06); env.gain.linearRampToValueAtTime(0.3, now+i*0.06+0.05); env.gain.exponentialRampToValueAtTime(0.001, now+i*0.06+0.4);
-        osc.connect(env); env.connect(master); osc.start(now+i*0.06); osc.stop(now+i*0.06+0.4);
-      }
-    } else if (type === 'ice') {
-      for (let i = 0; i < 8; i++) {
-        const osc = ctx.createOscillator(); osc.type = 'triangle'; osc.frequency.value = 1200 + i * 400;
-        const env = ctx.createGain(); env.gain.setValueAtTime(0.15, now+i*0.04); env.gain.exponentialRampToValueAtTime(0.001, now+i*0.04+0.2);
-        osc.connect(env); env.connect(master); osc.start(now+i*0.04); osc.stop(now+i*0.04+0.2);
-      }
-    }
+    if (ctx && ctx.state === 'suspended') ctx.resume();
   } catch(e) {}
+
+  // If already cached, rewind and play
+  if (soundCache[type]) {
+    try { soundCache[type].currentTime = 0; soundCache[type].play().catch(() => {}); } catch(e) {}
+    return;
+  }
+
+  // Build Audio element, try extensions in order until one loads
+  const audio = new Audio();
+  audio.volume = 0.7;
+  audio.preload = 'auto';
+  let extIdx = 0;
+
+  function tryNext() {
+    if (extIdx >= SOUND_EXTENSIONS.length) return; // no working file found — silent
+    audio.src = `./sounds/${type}.${SOUND_EXTENSIONS[extIdx++]}`;
+    audio.load();
+  }
+
+  audio.addEventListener('error', tryNext);
+  audio.addEventListener('canplaythrough', () => {
+    soundCache[type] = audio;
+    audio.play().catch(() => {});
+  }, { once: true });
+
+  tryNext();
 }
 
 // ─── THREE.JS SCENE ──────────────────────────────────────────────────────────
@@ -726,6 +720,7 @@ function initThree() {
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setClearColor(0x000000, 0); // fully transparent — bg canvas shows through
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -770,19 +765,104 @@ function initThree() {
   groundBody.position.y = -1;
   world.addBody(groundBody);
 
-  // Walls
-  [[-8,0,0],[8,0,0],[0,0,-8],[0,0,8]].forEach(([x,y,z]) => {
-    const wallBody = new CANNON.Body({ mass: 0 });
-    wallBody.addShape(new CANNON.Plane());
-    wallBody.position.set(x, y, z);
-    if (x !== 0) wallBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0,1,0), x > 0 ? -Math.PI/2 : Math.PI/2);
-    if (z !== 0) wallBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0), z > 0 ? Math.PI : 0);
-    world.addBody(wallBody);
+  // Ceiling — stops dice from flying out the top
+  const ceilBody = new CANNON.Body({ mass: 0 });
+  ceilBody.addShape(new CANNON.Plane());
+  ceilBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0), Math.PI/2);
+  ceilBody.position.y = 12;
+  world.addBody(ceilBody);
+
+  // Walls are built after first resize so they match the visible frustum
+  resizeRenderer();
+  rebuildWalls();
+  window.addEventListener('resize', () => { resizeRenderer(); rebuildWalls(); });
+  renderer.setAnimationLoop(renderLoop);
+}
+
+// Track wall bodies so we can remove and rebuild them on resize
+let wallBodies = [];
+
+function getGroundBounds() {
+  // Compute the half-extents of the visible ground plane (y=-1) from the camera frustum.
+  // Camera sits at (0, camY, camZ) looking at origin with given FOV and aspect.
+  const camY = camera.position.y;
+  const camZ = camera.position.z;
+  const fovRad = (camera.fov * Math.PI) / 180;
+  const aspect = camera.aspect || 1;
+  const groundY = -1;
+
+  // Ray from camera through bottom edge of screen hits ground at z = groundZ_far
+  // Ray from camera through top edge hits ground at z = groundZ_near (in front of camera)
+  // We use a conservative bound: the distance from camera to ground along the view axis.
+  // Simpler: cast four corner rays and find XZ extents at y=groundY.
+
+  const halfH = Math.tan(fovRad / 2);
+  const halfW = halfH * aspect;
+
+  // Camera looks toward -Z (at origin). Build view directions for 4 corners.
+  const camPos = camera.position.clone();
+  const target = new THREE.Vector3(0, 0, 0);
+  // forward, right, up in camera space
+  const forward = target.clone().sub(camPos).normalize();
+  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+  const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+
+  const corners = [
+    forward.clone().addScaledVector(right,  halfW).addScaledVector(up,  halfH),
+    forward.clone().addScaledVector(right, -halfW).addScaledVector(up,  halfH),
+    forward.clone().addScaledVector(right,  halfW).addScaledVector(up, -halfH),
+    forward.clone().addScaledVector(right, -halfW).addScaledVector(up, -halfH),
+  ];
+
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  corners.forEach(dir => {
+    if (Math.abs(dir.y) < 0.0001) return;
+    const t = (groundY - camPos.y) / dir.y;
+    if (t <= 0) return; // behind camera
+    const hx = camPos.x + dir.x * t;
+    const hz = camPos.z + dir.z * t;
+    minX = Math.min(minX, hx); maxX = Math.max(maxX, hx);
+    minZ = Math.min(minZ, hz); maxZ = Math.max(maxZ, hz);
   });
 
-  resizeRenderer();
-  window.addEventListener('resize', resizeRenderer);
-  renderer.setAnimationLoop(renderLoop);
+  // Clamp to reasonable max in case rays are near-parallel to ground
+  const LIMIT = 20;
+  minX = Math.max(minX, -LIMIT); maxX = Math.min(maxX, LIMIT);
+  minZ = Math.max(minZ, -LIMIT); maxZ = Math.min(maxZ, LIMIT);
+
+  return { minX, maxX, minZ, maxZ,
+    cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2,
+    halfX: (maxX - minX) / 2, halfZ: (maxZ - minZ) / 2 };
+}
+
+function rebuildWalls() {
+  // Remove old walls
+  wallBodies.forEach(b => world.remove(b));
+  wallBodies = [];
+
+  const b = getGroundBounds();
+  const wallH = 15; // tall enough to catch any die
+
+  // Each wall: [position, rotation axis, rotation angle]
+  const wallDefs = [
+    // Left  (-X)
+    { pos: [b.minX, wallH/2 - 1, b.cz], axis: [0,1,0], angle:  Math.PI/2 },
+    // Right (+X)
+    { pos: [b.maxX, wallH/2 - 1, b.cz], axis: [0,1,0], angle: -Math.PI/2 },
+    // Near  (+Z — toward camera)
+    { pos: [b.cx, wallH/2 - 1, b.maxZ], axis: [1,0,0], angle:  Math.PI },
+    // Far   (-Z — away from camera)
+    { pos: [b.cx, wallH/2 - 1, b.minZ], axis: [1,0,0], angle:  0 },
+  ];
+
+  wallDefs.forEach(({ pos, axis, angle }) => {
+    const body = new CANNON.Body({ mass: 0, restitution: 0.3 });
+    body.addShape(new CANNON.Plane());
+    body.position.set(...pos);
+    body.quaternion.setFromAxisAngle(new CANNON.Vec3(...axis), angle);
+    world.addBody(body);
+    wallBodies.push(body);
+  });
 }
 
 function resizeRenderer() {
@@ -797,21 +877,32 @@ let lastTime = 0;
 function renderLoop(time) {
   const dt = Math.min((time - lastTime) / 1000, 0.05);
   lastTime = time;
+  skinAnimTime += dt;
+
+  // Update animated skin textures (lava, void, sky)
+  const animatedSkins = ['lava', 'void', 'sky'];
+  if (animatedSkins.includes(currentSkin) && skinTextureCanvases[currentSkin]) {
+    skinTextureCanvases[currentSkin].update(skinAnimTime);
+  }
 
   if (animating) {
-    world.step(1/60, dt, 3);
+    // Scale physics timestep by rollSpeed so dice roll faster/slower
+    const physDt = Math.min(dt * rollSpeed, 0.05);
+    world.step(1/60, physDt, 3);
     diceMeshes.forEach((mesh, i) => {
       if (!diceBodies[i]) return;
       mesh.position.copy(diceBodies[i].position);
       mesh.quaternion.copy(diceBodies[i].quaternion);
     });
 
-    // Check if dice settled
-    if (time > rollStartTime + 2000) {
+    // Check if dice settled — settle window also scales with speed
+    const minRollMs = 1500 / rollSpeed;
+    const maxRollMs = 4500 / rollSpeed;
+    if (time > rollStartTime + minRollMs) {
       const allStopped = diceBodies.every(b =>
         b.velocity.length() < 0.3 && b.angularVelocity.length() < 0.3
       );
-      if (allStopped || time > rollStartTime + 4500) {
+      if (allStopped || time > rollStartTime + maxRollMs) {
         animating = false;
         showResults();
       }
@@ -823,12 +914,70 @@ function renderLoop(time) {
 }
 
 // ─── DICE GEOMETRY ───────────────────────────────────────────────────────────
+
+// Build a pentagonal trapezohedron (true D10 shape):
+// 10 kite faces, 5-fold symmetry, two polar apexes, zig-zag equatorial band.
+function buildD10Geometry(radius) {
+  radius = radius || 0.75;
+  const geo = new THREE.BufferGeometry();
+  const verts = [], indices = [];
+
+  // Two polar apexes
+  const TOP    =  radius;         // top apex y
+  const BOTTOM = -radius;         // bottom apex y
+
+  // 5 upper belt vertices  (slightly above equator, rotated 0°, 72°, 144°, ...)
+  // 5 lower belt vertices  (slightly below equator, rotated 36°, 108°, ...)
+  const uR = radius * 0.72;   // radial distance of upper ring
+  const uY = radius * 0.18;   // height of upper ring
+  const lR = radius * 0.72;
+  const lY = -radius * 0.18;
+
+  // Vertex 0: top apex
+  verts.push(0, TOP, 0);
+  // Vertices 1-5: upper ring
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    verts.push(uR * Math.cos(a), uY, uR * Math.sin(a));
+  }
+  // Vertices 6-10: lower ring (offset by 36°)
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + Math.PI / 5;
+    verts.push(lR * Math.cos(a), lY, lR * Math.sin(a));
+  }
+  // Vertex 11: bottom apex
+  verts.push(0, BOTTOM, 0);
+
+  // 5 upper kite faces: top apex → upper[i] → lower[i] → upper[i+1]
+  for (let i = 0; i < 5; i++) {
+    const u0 = 1 + i;
+    const u1 = 1 + (i + 1) % 5;
+    const l0 = 6 + i;
+    // kite: top, u0, l0, u1  (split into 2 triangles)
+    indices.push(0, u0, l0);
+    indices.push(0, l0, u1);
+  }
+  // 5 lower kite faces: bottom apex → lower[i] → upper[i+1] → lower[i+1]
+  for (let i = 0; i < 5; i++) {
+    const l0 = 6 + i;
+    const l1 = 6 + (i + 1) % 5;
+    const u1 = 1 + (i + 1) % 5;
+    indices.push(11, l1, u1);
+    indices.push(11, l0, l1);
+  }
+
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function createDiceGeometry(type) {
   switch(type) {
     case 'D4':  return new THREE.TetrahedronGeometry(0.7);
     case 'D6':  return new THREE.BoxGeometry(0.9, 0.9, 0.9, 1, 1, 1);
     case 'D8':  return new THREE.OctahedronGeometry(0.75);
-    case 'D10': return new THREE.DodecahedronGeometry(0.65, 0); // approximate
+    case 'D10': return buildD10Geometry(0.8);
     case 'D12': return new THREE.DodecahedronGeometry(0.7);
     case 'D20': return new THREE.IcosahedronGeometry(0.75);
     default:    return new THREE.BoxGeometry(0.9,0.9,0.9);
@@ -836,23 +985,316 @@ function createDiceGeometry(type) {
 }
 
 function createDicePhysicsShape(type) {
-  const r = 0.5;
   switch(type) {
     case 'D6':  return new CANNON.Box(new CANNON.Vec3(0.45,0.45,0.45));
-    default:    return new CANNON.Sphere(0.5);
+    default:    return new CANNON.Sphere(0.52);
   }
+}
+
+// ─── PROCEDURAL SKIN TEXTURES ────────────────────────────────────────────────
+// Each skin gets a 256×256 canvas texture with animated or static detail.
+// Animated skins (lava, void) update each frame via their canvas context.
+
+const skinTextureCanvases = {}; // skinId → {canvas, ctx, texture, update}
+let skinAnimTime = 0; // incremented in render loop
+
+function buildSkinTexture(skinId) {
+  if (skinTextureCanvases[skinId]) return skinTextureCanvases[skinId];
+  const SIZE = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+
+  let entry = { canvas, ctx, texture, update: null };
+
+  if (skinId === 'lava') {
+    // Animated lava: turbulent orange/red blobs that shift over time
+    entry.update = (t) => {
+      const id = ctx.createImageData(SIZE, SIZE);
+      const d = id.data;
+      for (let y = 0; y < SIZE; y++) {
+        for (let x = 0; x < SIZE; x++) {
+          const nx = x / SIZE, ny = y / SIZE;
+          // layered sine noise for organic look
+          const v = (
+            Math.sin((nx * 6 + t * 0.8)) +
+            Math.sin((ny * 6 - t * 0.6)) +
+            Math.sin((nx * 4 + ny * 4 + t)) +
+            Math.sin(Math.sqrt((nx-0.5)**2 + (ny-0.5)**2) * 10 - t * 1.2)
+          ) * 0.25 + 0.5; // 0..1
+          const hot = Math.pow(v, 1.4);
+          const idx = (y * SIZE + x) * 4;
+          d[idx]   = Math.min(255, hot * 255);                  // R
+          d[idx+1] = Math.min(255, Math.max(0, (hot-0.4)*180)); // G
+          d[idx+2] = 0;                                          // B
+          d[idx+3] = 255;
+        }
+      }
+      ctx.putImageData(id, 0, 0);
+      // Bright cracks overlay
+      ctx.strokeStyle = 'rgba(255,220,80,0.35)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 6; i++) {
+        const ox = (Math.sin(i * 1.3 + t * 0.3) * 0.5 + 0.5) * SIZE;
+        const oy = (Math.cos(i * 1.7 + t * 0.2) * 0.5 + 0.5) * SIZE;
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.lineTo(ox + Math.sin(t+i)*30, oy + Math.cos(t+i)*30);
+        ctx.stroke();
+      }
+      texture.needsUpdate = true;
+    };
+
+  } else if (skinId === 'ice') {
+    // Frost: static icy blue-white with crystalline crack lines
+    ctx.fillStyle = '#c8e8ff';
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Gradient depth
+    const grad = ctx.createRadialGradient(SIZE/2,SIZE/2,10, SIZE/2,SIZE/2,SIZE*0.7);
+    grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+    grad.addColorStop(0.5, 'rgba(180,220,255,0.6)');
+    grad.addColorStop(1, 'rgba(80,140,200,0.8)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,SIZE,SIZE);
+    // Frost crystal lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 0.8;
+    const rng = (s) => { let x = Math.sin(s)*10000; return x - Math.floor(x); };
+    for (let i = 0; i < 20; i++) {
+      const sx = rng(i*3.1)*SIZE, sy = rng(i*7.4)*SIZE;
+      ctx.beginPath(); ctx.moveTo(sx, sy);
+      for (let b = 0; b < 4; b++) {
+        const angle = rng(i+b*0.9) * Math.PI * 2;
+        const len = rng(i*2+b) * 40 + 15;
+        ctx.lineTo(sx + Math.cos(angle)*len, sy + Math.sin(angle)*len);
+        ctx.moveTo(sx, sy);
+      }
+      ctx.stroke();
+    }
+    // White sparkle dots
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    for (let i = 0; i < 30; i++) {
+      ctx.beginPath();
+      ctx.arc(rng(i*5.3)*SIZE, rng(i*8.1)*SIZE, rng(i*2.2)*2+0.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+    texture.needsUpdate = true;
+
+  } else if (skinId === 'void') {
+    // Animated void: dark swirling purple with a glowing slit-pupil eye in center
+    entry.update = (t) => {
+      const id = ctx.createImageData(SIZE, SIZE);
+      const d = id.data;
+      const cx2 = SIZE/2, cy2 = SIZE/2;
+      for (let y = 0; y < SIZE; y++) {
+        for (let x = 0; x < SIZE; x++) {
+          const dx = (x - cx2) / (SIZE/2), dy = (y - cy2) / (SIZE/2);
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          const angle = Math.atan2(dy, dx);
+          // Swirl: rotate angle by distance
+          const swirl = angle + dist * 2.5 - t * 0.4;
+          const v = (Math.sin(swirl * 3) * 0.5 + 0.5) * (1 - Math.min(dist, 1) * 0.6);
+          const idx = (y * SIZE + x) * 4;
+          d[idx]   = Math.floor(v * 80);
+          d[idx+1] = Math.floor(v * 20);
+          d[idx+2] = Math.floor(v * 140 + 40);
+          d[idx+3] = 255;
+        }
+      }
+      ctx.putImageData(id, 0, 0);
+
+      // Glowing eye — iris
+      const eyeR = SIZE * 0.22;
+      const irisGrad = ctx.createRadialGradient(cx2,cy2, 0, cx2,cy2, eyeR);
+      irisGrad.addColorStop(0, `rgba(180,0,255,${0.6 + Math.sin(t)*0.15})`);
+      irisGrad.addColorStop(0.5, `rgba(100,0,200,0.7)`);
+      irisGrad.addColorStop(1, 'rgba(20,0,60,0.9)');
+      ctx.beginPath();
+      ctx.ellipse(cx2, cy2, eyeR, eyeR * 0.65, 0, 0, Math.PI*2);
+      ctx.fillStyle = irisGrad;
+      ctx.fill();
+
+      // Glow halo
+      const glowGrad = ctx.createRadialGradient(cx2,cy2, eyeR*0.8, cx2,cy2, eyeR*1.6);
+      glowGrad.addColorStop(0, `rgba(160,0,255,${0.25 + Math.sin(t*1.3)*0.1})`);
+      glowGrad.addColorStop(1, 'rgba(80,0,180,0)');
+      ctx.beginPath();
+      ctx.ellipse(cx2, cy2, eyeR*1.6, eyeR*1.1, 0, 0, Math.PI*2);
+      ctx.fillStyle = glowGrad;
+      ctx.fill();
+
+      // Slit pupil — vertical ellipse that pulses slightly
+      const pupilH = eyeR * (0.8 + Math.sin(t*0.7) * 0.08);
+      const pupilW = eyeR * 0.18;
+      ctx.beginPath();
+      ctx.ellipse(cx2, cy2, pupilW, pupilH, 0, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(0,0,0,0.95)';
+      ctx.fill();
+
+      // Inner pupil sheen
+      ctx.beginPath();
+      ctx.ellipse(cx2 - pupilW*0.25, cy2 - pupilH*0.25, pupilW*0.25, pupilH*0.25, 0, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(200,100,255,0.4)';
+      ctx.fill();
+
+      texture.needsUpdate = true;
+    };
+
+  } else if (skinId === 'gold') {
+    // Hammered gold: warm gradient with radial sheen rings
+    const grad = ctx.createRadialGradient(SIZE*0.35, SIZE*0.3, 5, SIZE/2, SIZE/2, SIZE*0.65);
+    grad.addColorStop(0, '#fff5a0');
+    grad.addColorStop(0.3, '#f0c030');
+    grad.addColorStop(0.7, '#c88010');
+    grad.addColorStop(1, '#805000');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Hammered texture: small circles
+    for (let i = 0; i < 60; i++) {
+      const rng = (s) => { let x = Math.sin(s*127.1)*43758.5; return x - Math.floor(x); };
+      const hx = rng(i*3.7)*SIZE, hy = rng(i*5.3)*SIZE, hr = rng(i*2.1)*8+3;
+      const hg = ctx.createRadialGradient(hx-hr*0.3, hy-hr*0.3, 0, hx, hy, hr);
+      hg.addColorStop(0, 'rgba(255,240,150,0.3)');
+      hg.addColorStop(1, 'rgba(100,60,0,0.2)');
+      ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI*2);
+      ctx.fillStyle = hg; ctx.fill();
+    }
+    texture.needsUpdate = true;
+
+  } else if (skinId === 'forest') {
+    // Mossy bark: green-brown with noise texture
+    ctx.fillStyle = '#2a3a1a';
+    ctx.fillRect(0,0,SIZE,SIZE);
+    const id2 = ctx.createImageData(SIZE, SIZE);
+    const d2 = id2.data;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        const v = (Math.sin(x*0.3)*Math.cos(y*0.25) + Math.sin(x*0.07+y*0.11)*2) * 0.25 + 0.5;
+        const i2 = (y*SIZE+x)*4;
+        d2[i2]   = Math.floor(30 + v*40);
+        d2[i2+1] = Math.floor(50 + v*80);
+        d2[i2+2] = Math.floor(10 + v*20);
+        d2[i2+3] = 255;
+      }
+    }
+    ctx.putImageData(id2, 0, 0);
+    // Moss highlight streaks
+    ctx.strokeStyle = 'rgba(100,200,60,0.25)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 12; i++) {
+      const rng = (s) => { let x = Math.sin(s)*10000; return x - Math.floor(x); };
+      ctx.beginPath();
+      ctx.moveTo(rng(i*3)*SIZE, rng(i*7)*SIZE);
+      ctx.bezierCurveTo(rng(i+1)*SIZE, rng(i+2)*SIZE, rng(i+3)*SIZE, rng(i+4)*SIZE, rng(i+5)*SIZE, rng(i+6)*SIZE);
+      ctx.stroke();
+    }
+    texture.needsUpdate = true;
+
+  } else if (skinId === 'bone') {
+    // Aged bone: off-white with vein cracks and yellowing
+    const bg2 = ctx.createLinearGradient(0,0,SIZE,SIZE);
+    bg2.addColorStop(0,'#f0e8d0'); bg2.addColorStop(1,'#c8b890');
+    ctx.fillStyle = bg2; ctx.fillRect(0,0,SIZE,SIZE);
+    ctx.strokeStyle = 'rgba(140,110,70,0.35)';
+    ctx.lineWidth = 0.8;
+    for (let i = 0; i < 18; i++) {
+      const rng = (s) => { let x = Math.sin(s*127.1)*43758.5; return x - Math.floor(x); };
+      ctx.beginPath();
+      ctx.moveTo(rng(i*4.1)*SIZE, rng(i*6.3)*SIZE);
+      ctx.quadraticCurveTo(rng(i*2)*SIZE, rng(i*3)*SIZE, rng(i*5)*SIZE, rng(i*7)*SIZE);
+      ctx.stroke();
+    }
+    // Yellowing spots
+    for (let i = 0; i < 15; i++) {
+      const rng = (s) => { let x = Math.sin(s*127.1)*43758.5; return x - Math.floor(x); };
+      const sg = ctx.createRadialGradient(rng(i*3.3)*SIZE, rng(i*4.4)*SIZE, 0, rng(i*3.3)*SIZE, rng(i*4.4)*SIZE, 20);
+      sg.addColorStop(0,'rgba(180,140,60,0.25)'); sg.addColorStop(1,'rgba(180,140,60,0)');
+      ctx.beginPath(); ctx.arc(rng(i*3.3)*SIZE, rng(i*4.4)*SIZE, 20, 0, Math.PI*2);
+      ctx.fillStyle = sg; ctx.fill();
+    }
+    texture.needsUpdate = true;
+
+  } else if (skinId === 'blood') {
+    // Dark crimson with wet sheen drips
+    ctx.fillStyle = '#220004'; ctx.fillRect(0,0,SIZE,SIZE);
+    const id3 = ctx.createImageData(SIZE, SIZE);
+    const d3 = id3.data;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        const v = (Math.sin(x*0.15)*Math.sin(y*0.12) + Math.sin((x+y)*0.09)) * 0.3 + 0.5;
+        const i3 = (y*SIZE+x)*4;
+        d3[i3]   = Math.floor(80 + v*100);
+        d3[i3+1] = 0; d3[i3+2] = Math.floor(v*15); d3[i3+3] = 255;
+      }
+    }
+    ctx.putImageData(id3,0,0);
+    // Wet highlight streaks
+    ctx.strokeStyle = 'rgba(255,80,80,0.2)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 5; i++) {
+      const rng = (s) => { let x = Math.sin(s)*10000; return x-Math.floor(x); };
+      ctx.beginPath();
+      ctx.moveTo(rng(i*2.1)*SIZE, 0);
+      ctx.lineTo(rng(i*2.1)*SIZE + (rng(i)-0.5)*40, SIZE);
+      ctx.stroke();
+    }
+    texture.needsUpdate = true;
+
+  } else if (skinId === 'sky') {
+    // Animated celestial: deep blue with drifting star-motes
+    entry.update = (t) => {
+      const id4 = ctx.createImageData(SIZE, SIZE);
+      const d4 = id4.data;
+      for (let y = 0; y < SIZE; y++) {
+        for (let x = 0; x < SIZE; x++) {
+          const nx = x/SIZE, ny = y/SIZE;
+          const v = (Math.sin(nx*4+t*0.3)*Math.cos(ny*4-t*0.2) + Math.sin((nx+ny)*5+t*0.5)) * 0.25 + 0.5;
+          const i4 = (y*SIZE+x)*4;
+          d4[i4]   = Math.floor(20 + v*60);
+          d4[i4+1] = Math.floor(40 + v*80);
+          d4[i4+2] = Math.floor(100 + v*155);
+          d4[i4+3] = 255;
+        }
+      }
+      ctx.putImageData(id4,0,0);
+      // Twinkling stars
+      for (let i = 0; i < 25; i++) {
+        const rng = (s) => { let x = Math.sin(s*127.1)*43758.5; return x-Math.floor(x); };
+        const sx = rng(i*3.3)*SIZE, sy = rng(i*7.1)*SIZE;
+        const brightness = 0.4 + Math.sin(t*2 + i*1.3)*0.4;
+        ctx.beginPath();
+        ctx.arc(sx, sy, rng(i*2.2)*2+0.5, 0, Math.PI*2);
+        ctx.fillStyle = `rgba(200,220,255,${brightness})`;
+        ctx.fill();
+      }
+      texture.needsUpdate = true;
+    };
+  }
+
+  // For static skins, do an immediate draw so texture is ready
+  if (!entry.update) {
+    entry.update = () => {}; // no-op for static
+  }
+
+  skinTextureCanvases[skinId] = entry;
+  return entry;
 }
 
 function getSkinMaterial(skinId) {
   const skin = SKINS.find(s => s.id === skinId) || SKINS[0];
-  return new THREE.MeshStandardMaterial({
-    color: new THREE.Color(skin.color1),
+  const entry = buildSkinTexture(skinId);
+
+  const mat = new THREE.MeshStandardMaterial({
+    map: entry.texture,
+    color: new THREE.Color('#ffffff'),
     emissive: new THREE.Color(skin.emissive),
-    emissiveIntensity: 0.5,
-    roughness: 0.3,
-    metalness: 0.2,
-    wireframe: false,
+    emissiveIntensity: skinId === 'void' ? 0.8 : (skinId === 'lava' ? 0.6 : 0.3),
+    roughness: skinId === 'bone' ? 0.9 : (skinId === 'gold' ? 0.15 : 0.4),
+    metalness: skinId === 'gold' ? 0.7 : (skinId === 'ice' ? 0.1 : 0.05),
   });
+  return mat;
 }
 
 // ─── ROLL LOGIC ──────────────────────────────────────────────────────────────
@@ -887,18 +1329,22 @@ function buildDiceForRoll() {
       // Physics body
       const body = new CANNON.Body({ mass: 1 });
       body.addShape(createDicePhysicsShape(type));
-      body.linearDamping = 0.2;
-      body.angularDamping = 0.2;
+      body.linearDamping  = 0.25 / rollSpeed; // faster = less damping = more energetic
+      body.angularDamping = 0.25 / rollSpeed;
 
-      // Random spawn above tray
-      const px = (Math.random()-0.5)*6;
-      const pz = (Math.random()-0.5)*6;
-      const py = 4 + Math.random()*3;
+      // Spawn within visible ground bounds (with inset so dice don't hug walls)
+      const bounds = getGroundBounds();
+      const inset = 0.8;
+      const px = bounds.cx + (Math.random()-0.5) * (bounds.halfX - inset) * 2;
+      const pz = bounds.cz + (Math.random()-0.5) * (bounds.halfZ - inset) * 2;
+      const py = 3 + Math.random()*2;
       body.position.set(px, py, pz);
 
-      // Random initial velocity
-      body.velocity.set((Math.random()-0.5)*8, -2+Math.random()*(-4), (Math.random()-0.5)*8);
-      body.angularVelocity.set((Math.random()-0.5)*20, (Math.random()-0.5)*20, (Math.random()-0.5)*20);
+      // Initial velocity scaled by rollSpeed
+      const vs = 6 * rollSpeed;
+      body.velocity.set((Math.random()-0.5)*vs, -2*rollSpeed, (Math.random()-0.5)*vs);
+      const ws = 18 * rollSpeed;
+      body.angularVelocity.set((Math.random()-0.5)*ws, (Math.random()-0.5)*ws, (Math.random()-0.5)*ws);
 
       // Random initial rotation
       body.quaternion.setFromEuler(Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2);
@@ -928,6 +1374,12 @@ function initiateRoll() {
   rollDone = false;
 
   buildDiceForRoll();
+
+  // Snap camera to a wide view fitting all spawned dice — so they're always visible
+  // Use a generous padding so even high-flying dice don't escape view
+  snapCameraToFit(diceMeshes, 2.2);
+  // Also rebuild walls to match this wider camera view
+  rebuildWalls();
 
   animating = true;
   rollStartTime = performance.now();
@@ -994,8 +1446,8 @@ function showResults() {
   if (rollHistory.length > 50) rollHistory.pop();
   try { localStorage.setItem('fof_history', JSON.stringify(rollHistory)); } catch(e){}
 
-  // Arrange dice in a neat grid then zoom camera to frame them all
-  arrangeDiceGrid(() => zoomToFitAll());
+  // Arrange dice in a neat grid then zoom camera in tightly to show results
+  arrangeDiceGrid(() => tweenCameraToFit(diceMeshes, 1.35, 700));
 }
 
 // Arrange all settled dice into a tidy grid so nothing overlaps
@@ -1042,80 +1494,77 @@ function arrangeDiceGrid(onDone) {
   requestAnimationFrame(animStep);
 }
 
-// Compute bounding box of all dice and fit the camera to show all of them
-function zoomToFitAll() {
-  const n = diceMeshes.length;
-  if (n === 0) return;
+// (zoomToFitAll replaced by tweenCameraToFit / calcFitCamera above)
 
-  // Find bounding box centre and extents
-  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-  diceMeshes.forEach(m => {
-    minX = Math.min(minX, m.position.x);
-    maxX = Math.max(maxX, m.position.x);
-    minZ = Math.min(minZ, m.position.z);
-    maxZ = Math.max(maxZ, m.position.z);
-  });
+function resetCamera() {
+  // Just zoom out to default overview when no dice present
+  tweenCamera(0, 14, 14, 0, 0, 0, 600);
+}
 
-  const cx = (minX + maxX) / 2;
-  const cz = (minZ + maxZ) / 2;
-  const extentX = (maxX - minX) / 2 + 1.2; // padding
-  const extentZ = (maxZ - minZ) / 2 + 1.2;
-
-  // Camera looks down at a slight angle from above.
-  // We want all dice in the frustum. Camera is at (cx, H, cz + D) looking at (cx, groundY, cz).
-  // Using vertical FOV=55deg and aspect ratio, compute required distance.
-  const fovRad = (camera.fov * Math.PI) / 180;
-  const aspect = camera.aspect || 1;
-  // Half-height visible at distance D from target: tan(fov/2)*D
-  // Half-width visible: aspect * tan(fov/2)*D
-  // We need: tan(fov/2)*D >= extentZ  AND  aspect*tan(fov/2)*D >= extentX
-  const tanHalf = Math.tan(fovRad / 2);
-  const distForZ = extentZ / tanHalf;
-  const distForX = extentX / (aspect * tanHalf);
-  const dist = Math.max(distForZ, distForX, 3); // minimum zoom
-
-  // Camera sits at angle: D along z-axis offset, H up, so it looks down 35°
-  const angle = 38 * Math.PI / 180;
-  const camD = dist * Math.cos(angle);
-  const camH = dist * Math.sin(angle) + 0.5;
-
-  const startX = camera.position.x;
-  const startY = camera.position.y;
-  const startZ = camera.position.z;
-  const targetX = cx;
-  const targetY = camH;
-  const targetZ = cz + camD;
-
-  const dur = 700;
+// Tween camera to a target position/lookat smoothly
+function tweenCamera(tx, ty, tz, lx, ly, lz, dur) {
+  const sx = camera.position.x, sy = camera.position.y, sz = camera.position.z;
   const startTime = performance.now();
   function ease(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; }
-
   function step(now) {
     const t = Math.min((now - startTime) / dur, 1);
     const e = ease(t);
-    camera.position.x = startX + (targetX - startX) * e;
-    camera.position.y = startY + (targetY - startY) * e;
-    camera.position.z = startZ + (targetZ - startZ) * e;
-    camera.lookAt(cx, -0.5, cz);
+    camera.position.set(
+      sx + (tx - sx) * e,
+      sy + (ty - sy) * e,
+      sz + (tz - sz) * e
+    );
+    camera.lookAt(lx, ly, lz);
     if (t < 1) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);
 }
 
-function resetCamera() {
-  const targetY = 8; const targetZ = 10;
-  const startY = camera.position.y; const startZ = camera.position.z;
-  const dur = 500; const start = performance.now();
-  function ease(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; }
-  function step(now) {
-    const t = Math.min((now-start)/dur, 1);
-    const e = ease(t);
-    camera.position.y = startY + (targetY - startY) * e;
-    camera.position.z = startZ + (targetZ - startZ) * e;
-    camera.lookAt(0, 0, 0);
-    if (t < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
+// Compute camera position that fits a bounding box of dice (by XZ extent at ground level)
+// Returns {cx, cz, camY, camZ} — camera at (cx, camY, cz+camD) looking at (cx, -0.5, cz)
+function calcFitCamera(diceMeshList, paddingFactor) {
+  paddingFactor = paddingFactor || 1.4;
+  const n = diceMeshList.length;
+  if (n === 0) return { cx:0, cz:0, camY:14, camD:14 };
+
+  let minX=Infinity, maxX=-Infinity, minZ=Infinity, maxZ=-Infinity;
+  diceMeshList.forEach(m => {
+    minX = Math.min(minX, m.position.x - 0.6);
+    maxX = Math.max(maxX, m.position.x + 0.6);
+    minZ = Math.min(minZ, m.position.z - 0.6);
+    maxZ = Math.max(maxZ, m.position.z + 0.6);
+  });
+
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  const extX = (maxX - minX) / 2 * paddingFactor;
+  const extZ = (maxZ - minZ) / 2 * paddingFactor;
+
+  const fovRad = (camera.fov * Math.PI) / 180;
+  const aspect = camera.aspect || 1;
+  const tanHalf = Math.tan(fovRad / 2);
+  const distForZ = extZ / tanHalf;
+  const distForX = extX / (aspect * tanHalf);
+  const dist = Math.max(distForZ, distForX, 3.5);
+
+  const angle = 42 * Math.PI / 180; // look-down angle
+  const camD = dist * Math.cos(angle);
+  const camY = dist * Math.sin(angle) + 0.5;
+
+  return { cx, cz, camY, camD };
+}
+
+// Instantly position camera to overview of given dice list
+function snapCameraToFit(diceMeshList, padding) {
+  const f = calcFitCamera(diceMeshList, padding);
+  camera.position.set(f.cx, f.camY, f.cz + f.camD);
+  camera.lookAt(f.cx, -0.5, f.cz);
+}
+
+// Animate camera to fit given dice list
+function tweenCameraToFit(diceMeshList, padding, dur) {
+  const f = calcFitCamera(diceMeshList, padding);
+  tweenCamera(f.cx, f.camY, f.cz + f.camD, f.cx, -0.5, f.cz, dur || 700);
 }
 
 function resetAll() {
@@ -1315,6 +1764,23 @@ function renderMenuPanel() {
     sndEl.appendChild(b);
   });
 
+  // Roll Speed
+  const speedEl = document.getElementById('speed-options');
+  speedEl.innerHTML = '';
+  const SPEEDS = [
+    {id:0.4, label:'🐢 Slow'},
+    {id:1.0, label:'⚔ Normal'},
+    {id:2.0, label:'⚡ Fast'},
+    {id:4.0, label:'💨 Berserk'},
+  ];
+  SPEEDS.forEach(s => {
+    const b = document.createElement('button');
+    b.className = 'opt-btn' + (rollSpeed === s.id ? ' active' : '');
+    b.textContent = s.label;
+    b.onclick = () => { rollSpeed = s.id; renderMenuPanel(); };
+    speedEl.appendChild(b);
+  });
+
   // Saved configs
   renderSavedList();
 }
@@ -1437,37 +1903,207 @@ function toggleDis() {
 }
 
 // ─── BACKGROUND EFFECTS ───────────────────────────────────────────────────────
+let bgAnimId = null;
+
 function setBackground(type) {
   currentBg = type;
-  cancelAnimationFrame(bgAnimFrame);
+  if (bgAnimId) { cancelAnimationFrame(bgAnimId); bgAnimId = null; }
   bgParticles = [];
 
   const wrap = document.getElementById('canvas-wrap');
-  if (bgCanvas) { bgCanvas.remove(); bgCanvas = null; }
+  if (bgCanvas) { bgCanvas.remove(); bgCanvas = null; bgCtx = null; }
 
-  if (type === 'snow' || type === 'ember' || type === 'grid') {
+  const needsCanvas = ['snow','ember','grid','dark','stone'].includes(type);
+  if (needsCanvas) {
     bgCanvas = document.createElement('canvas');
     bgCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1';
     wrap.insertBefore(bgCanvas, wrap.firstChild);
     bgCtx = bgCanvas.getContext('2d');
     resizeBg();
     window.addEventListener('resize', resizeBg);
-
-    if (type === 'snow') initSnow();
-    else if (type === 'ember') initEmbers();
-    else if (type === 'grid') drawGrid();
   }
 
-  // Apply to body/wrap background
-  const colors = {
-    dark: '#0a0a0a',
-    stone: '#1a1614',
-    none: 'transparent',
-    snow: '#0e0e16',
-    grid: '#070712',
-    ember: '#100500',
-  };
-  wrap.style.background = colors[type] || '#0a0a0a';
+  wrap.style.background = type === 'none' ? 'transparent' : '#000';
+
+  if (type === 'snow')  { initSnow();   bgLoop(); }
+  else if (type === 'ember') { initEmbers(); bgLoop(); }
+  else if (type === 'grid')  { drawGrid(); }
+  else if (type === 'dark')  { drawVoidBg(0); bgLoop(); }
+  else if (type === 'stone') { drawStoneBg(); }
+}
+
+function bgLoop() {
+  let t = 0;
+  function step() {
+    t += 0.016;
+    if (currentBg === 'dark') drawVoidBg(t);
+    else if (currentBg === 'snow') updateBgParticlesFrame();
+    else if (currentBg === 'ember') updateBgParticlesFrame();
+    bgAnimId = requestAnimationFrame(step);
+  }
+  bgAnimId = requestAnimationFrame(step);
+}
+
+// Dark background: whirling void with spiral arms and drifting motes
+function drawVoidBg(t) {
+  if (!bgCtx) return;
+  const w = bgCanvas.width, h = bgCanvas.height;
+  const cx = w/2, cy = h/2;
+  bgCtx.clearRect(0,0,w,h);
+
+  // Deep void gradient
+  const radGrad = bgCtx.createRadialGradient(cx,cy, 0, cx,cy, Math.max(w,h)*0.7);
+  radGrad.addColorStop(0, `rgba(20,0,40,${0.6 + Math.sin(t*0.4)*0.1})`);
+  radGrad.addColorStop(0.5, 'rgba(5,0,15,0.85)');
+  radGrad.addColorStop(1, 'rgba(0,0,5,0.95)');
+  bgCtx.fillStyle = radGrad;
+  bgCtx.fillRect(0,0,w,h);
+
+  // Spiral arms
+  const arms = 3;
+  for (let arm = 0; arm < arms; arm++) {
+    const armOffset = (arm / arms) * Math.PI * 2;
+    bgCtx.beginPath();
+    let first = true;
+    for (let i = 0; i < 200; i++) {
+      const r = (i / 200) * Math.min(w,h) * 0.48;
+      const angle = (i / 200) * Math.PI * 5 + armOffset + t * 0.12;
+      const px = cx + Math.cos(angle) * r;
+      const py = cy + Math.sin(angle) * r;
+      const alpha = (1 - i/200) * 0.12;
+      if (first) { bgCtx.moveTo(px,py); first = false; }
+      else bgCtx.lineTo(px,py);
+    }
+    const hue = 260 + arm * 30;
+    bgCtx.strokeStyle = `hsla(${hue},80%,60%,0.15)`;
+    bgCtx.lineWidth = 2;
+    bgCtx.stroke();
+  }
+
+  // Drifting void motes
+  if (bgParticles.length === 0) {
+    bgParticles = Array.from({length:60}, () => ({
+      x: Math.random()*w, y: Math.random()*h,
+      r: Math.random()*1.5+0.3,
+      angle: Math.random()*Math.PI*2,
+      orbitR: Math.random()*Math.min(w,h)*0.4 + 20,
+      speed: (Math.random()-0.5)*0.003 + 0.001,
+      hue: 240 + Math.random()*80
+    }));
+  }
+  bgParticles.forEach(p => {
+    p.angle += p.speed;
+    p.x = cx + Math.cos(p.angle + t*0.05) * p.orbitR;
+    p.y = cy + Math.sin(p.angle + t*0.05) * p.orbitR * 0.6;
+    const alpha = 0.3 + Math.sin(p.angle * 3 + t)*0.2;
+    bgCtx.beginPath();
+    bgCtx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    bgCtx.fillStyle = `hsla(${p.hue},70%,70%,${alpha})`;
+    bgCtx.fill();
+  });
+
+  // Central glow
+  const coreGrad = bgCtx.createRadialGradient(cx,cy,0, cx,cy,Math.min(w,h)*0.25);
+  coreGrad.addColorStop(0, `rgba(80,0,160,${0.12 + Math.sin(t*0.7)*0.04})`);
+  coreGrad.addColorStop(1, 'rgba(20,0,60,0)');
+  bgCtx.fillStyle = coreGrad;
+  bgCtx.fillRect(0,0,w,h);
+}
+
+// Stone background: cracked dungeon wall
+function drawStoneBg() {
+  if (!bgCtx) return;
+  const w = bgCanvas.width, h = bgCanvas.height;
+  bgCtx.clearRect(0,0,w,h);
+
+  // Base stone color with noise-like variation
+  const id = bgCtx.createImageData(w, h);
+  const d = id.data;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Multi-frequency value noise approximation
+      const v = (
+        Math.sin(x * 0.08 + 1.2) * Math.cos(y * 0.09 + 0.7) +
+        Math.sin(x * 0.19 + y * 0.13) * 0.5 +
+        Math.sin(x * 0.37 + 2.1) * Math.cos(y * 0.31 + 1.8) * 0.25
+      ) * 0.4 + 0.5;
+      const base = 28 + v * 30;
+      const idx = (y * w + x) * 4;
+      d[idx]   = Math.floor(base * 1.05);
+      d[idx+1] = Math.floor(base * 0.95);
+      d[idx+2] = Math.floor(base * 0.85);
+      d[idx+3] = 255;
+    }
+  }
+  bgCtx.putImageData(id,0,0);
+
+  // Draw stone blocks (mortar grid)
+  const BLOCK_W = Math.floor(w / 5);
+  const BLOCK_H = Math.floor(h / 8);
+  bgCtx.strokeStyle = 'rgba(0,0,0,0.6)';
+  bgCtx.lineWidth = 2;
+  for (let row = 0; row <= 8; row++) {
+    const y2 = row * BLOCK_H;
+    bgCtx.beginPath(); bgCtx.moveTo(0, y2); bgCtx.lineTo(w, y2); bgCtx.stroke();
+    for (let col = 0; col <= 6; col++) {
+      // Offset alternating rows for brick pattern
+      const xOff = (row % 2 === 0) ? 0 : BLOCK_W / 2;
+      const x2 = col * BLOCK_W + xOff;
+      bgCtx.beginPath(); bgCtx.moveTo(x2, y2); bgCtx.lineTo(x2, y2 + BLOCK_H); bgCtx.stroke();
+    }
+  }
+
+  // Mortar fill (slightly lighter lines)
+  bgCtx.strokeStyle = 'rgba(60,55,50,0.5)';
+  bgCtx.lineWidth = 3;
+  for (let row = 0; row <= 8; row++) {
+    const y2 = row * BLOCK_H;
+    bgCtx.beginPath(); bgCtx.moveTo(0, y2); bgCtx.lineTo(w, y2); bgCtx.stroke();
+  }
+
+  // Cracks — jagged multi-segment lines
+  const rng = (s) => { let x = Math.sin(s * 127.1) * 43758.5453; return x - Math.floor(x); };
+  bgCtx.strokeStyle = 'rgba(0,0,0,0.7)';
+  bgCtx.lineWidth = 1;
+  for (let c = 0; c < 18; c++) {
+    let cx2 = rng(c * 3.1) * w;
+    let cy2 = rng(c * 7.3) * h;
+    bgCtx.beginPath(); bgCtx.moveTo(cx2, cy2);
+    const segs = 4 + Math.floor(rng(c * 2.2) * 6);
+    for (let s = 0; s < segs; s++) {
+      cx2 += (rng(c * 10 + s * 4.1) - 0.5) * 40;
+      cy2 += (rng(c * 9  + s * 3.7) - 0.5) * 40;
+      bgCtx.lineTo(cx2, cy2);
+    }
+    bgCtx.stroke();
+    // Secondary thin hairline crack
+    bgCtx.strokeStyle = 'rgba(0,0,0,0.3)';
+    bgCtx.lineWidth = 0.5;
+    bgCtx.stroke();
+    bgCtx.strokeStyle = 'rgba(0,0,0,0.7)';
+    bgCtx.lineWidth = 1;
+  }
+
+  // Dampness/shadow vignette
+  const vig = bgCtx.createRadialGradient(w/2,h/2, Math.min(w,h)*0.2, w/2,h/2, Math.max(w,h)*0.8);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.65)');
+  bgCtx.fillStyle = vig;
+  bgCtx.fillRect(0,0,w,h);
+
+  // Moisture streaks running down
+  bgCtx.strokeStyle = 'rgba(40,50,60,0.2)';
+  bgCtx.lineWidth = 1;
+  for (let i = 0; i < 8; i++) {
+    const sx = rng(i * 5.5) * w;
+    bgCtx.beginPath(); bgCtx.moveTo(sx, 0);
+    let cx3 = sx;
+    for (let s = 0; s < 10; s++) {
+      cx3 += (rng(i + s * 0.3) - 0.5) * 10;
+      bgCtx.lineTo(cx3, s * h / 10);
+    }
+    bgCtx.stroke();
+  }
 }
 
 function resizeBg() {
@@ -1475,13 +2111,16 @@ function resizeBg() {
   const wrap = document.getElementById('canvas-wrap');
   bgCanvas.width = wrap.clientWidth;
   bgCanvas.height = wrap.clientHeight;
+  bgParticles = []; // reset particles so they respawn to new size
   if (currentBg === 'grid') drawGrid();
+  else if (currentBg === 'stone') drawStoneBg();
+  // dark/snow/ember reinitialise naturally in their loops
 }
 
 function drawGrid() {
   if (!bgCtx) return;
   const w = bgCanvas.width, h = bgCanvas.height;
-  bgCtx.clearRect(0,0,w,h);
+  bgCtx.fillStyle = '#070712'; bgCtx.fillRect(0,0,w,h);
   bgCtx.strokeStyle = 'rgba(80,140,255,0.08)';
   bgCtx.lineWidth = 0.5;
   const step = 40;
@@ -1512,11 +2151,13 @@ function initEmbers() {
   }));
 }
 
-function updateBgParticles() {
-  if (!bgCanvas || !bgCtx || bgParticles.length === 0) return;
+function updateBgParticlesFrame() {
+  if (!bgCanvas || !bgCtx) return;
   const w = bgCanvas.width, h = bgCanvas.height;
   bgCtx.clearRect(0,0,w,h);
-  if (currentBg === 'grid') { drawGrid(); return; }
+  if (currentBg === 'snow') bgCtx.fillStyle = '#0e0e16';
+  else if (currentBg === 'ember') bgCtx.fillStyle = '#100500';
+  bgCtx.fillRect(0,0,w,h);
 
   bgParticles.forEach(p => {
     if (currentBg === 'snow') {
@@ -1539,6 +2180,11 @@ function updateBgParticles() {
       bgCtx.fill();
     }
   });
+}
+
+// Legacy stub — called by old code paths
+function updateBgParticles() {
+  // handled by bgLoop() now — no-op here
 }
 
 function setCustomBg(color) {
